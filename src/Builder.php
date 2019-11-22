@@ -22,21 +22,21 @@ use PDO,
   PDOException,
   PDOStatement;
 
-use at\layman\ {
-  BuilderException,
-  LaymanException
-};
+use at\layman\BuilderException;
 
 /**
  * Base class for query builders.
  */
 abstract class Builder {
 
-  /** @var string Key for parsed SQL (fragment). */
-  public const SQL = 'sql';
+  /** @var int Key for the SQL (fragment) returned from build()/parse(). */
+  public const SQL = 0;
+
+  /** @var int Key for the data values returned from build(). */
+  public const DATA = 1;
 
   /** @var string PDO driver type this builder supports. */
-  public const TYPE = '';
+  public const TYPE = "";
 
   /**
    * Templating token components.
@@ -48,61 +48,56 @@ abstract class Builder {
    * @var string T_PARAM
    * @var string T_PARAMS
    */
-  protected const T_OPEN = '{';
-  protected const T_CLOSE = '}';
-  protected const T_NAME = '_';
-  protected const T_PARAM = '?';
-  protected const T_NAMES = '_+';
-  protected const T_PARAMS = '?+';
+  protected const T_OPEN = "{";
+  protected const T_CLOSE = "}";
+  protected const T_NAME = "_";
+  protected const T_PARAM = "?";
+  protected const T_NAMES = "_+";
+  protected const T_PARAMS = "?+";
+
+  /** @var Factory This builder's Factory. */
+  protected $factory;
 
   /**
-   * Template token:parser map.
+   * Template token:formatter callback map.
    *
-   * Parsers must have the following signature:
-   *  parser(array $parsed, scalar|scalar[] $argument) : array $parsed
+   * Formatter callbacks must have the following signature:
+   *  formatter(array $parsed, scalar|scalar[] $argument) : array $parsed
+   *
+   * Formatter callbacks must throw a BuilderException on failure.
+   *
+   * Every builder must support the following tokens at a minimum:
+   *  Instructions:
+   *  - {_} Identifier (table name, field name, etc.)
+   *  - {_+} List of identifiers
+   *  Data:
+   *  - {?} Value (string, integer, boolean, decimal, null, etc.)
+   *  - {?+} List of values
+   *
+   * Note that {_+} and {?+} only make sense where lists of values are permissible in SQL;
+   * e.g., in a field list or an IN() statement.
    *
    * @var callable[]
    */
-  protected const PARSER = [];
+  protected $formatter = [];
 
   /**
-   * Prepares a Statement object from the query and binds initial parameters.
-   *
-   * @throws PDOException If preparing the statement fails
-   * @return PDOStatement The prepared and bound statement
+   * @param Factory $factory The Factory to use
+   * @throws BuilderException FACTORY_MISMATCH if type doesn't match builder type
    */
-  abstract public function prepare() : PDOStatement;
-
-  /** @var PDO This builder's PDO connection. */
-  protected $pdo;
-
-  /**
-   * @param PDO $pdo The Pdo connection to use
-   * @throws LaymanException PDO_MISMATCH if pdo instance uses the wrong driver for this builder
-   */
-  public function __construct(PDO $pdo) {
-    $type = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
-    if ($type !== static::TYPE) {
-      throw LaymanException::create(LaymanException::PDO_MISMATCH, ['type' => $type]);
+  public function __construct(Factory $factory) {
+    if ($factory::TYPE !== static::TYPE) {
+      throw BuilderException::create(
+        BuilderException::FACTORY_MISMATCH,
+        ["builder_type" => static::TYPE, "type" => $factory::TYPE]
+      );
     }
-
-    $this->pdo = $pdo;
+    $this->factory = $factory;
+    $this->setupFormatters();
   }
 
   /**
-   * Prepares a Statement object from the query and executes it.
-   *
-   * @throws PDOException If preparing or executing the statement fails
-   * @return PDOStatement The prepared, bound, and executed statement
-   */
-  public function execute() : PDOStatement {
-    $statement = $this->prepare();
-    $statement->execute();
-    return $statement;
-  }
-
-  /**
-   * Parses and performs replacements on an SQL template.
+   * Performs replacements on an SQL template.
    *
    * This method is intended for internal use, but is publicly available if needed.
    * Note it does not parse, validate, or make corrections to SQL.
@@ -117,17 +112,6 @@ abstract class Builder {
    * ALL variable data passed in a query should be parameterized.
    *
    * The number of {} tokens in the template must match the arg count.
-   *
-   * Recognizes the following tokens:
-   *  Instructions:
-   *  - {_} Identifier (table name, field name, etc.)
-   *  - {_+} List of identifiers
-   *  Data:
-   *  - {?} Value (string, integer, boolean, decimal, null, etc.)
-   *  - {?+} List of values
-   *
-   * Note that {_+} and {?+} only make sense where lists of values are permissible in SQL;
-   * e.g., in a field list or an IN() statement.
    *
    * @param string $template SQL (fragment) with formatting tokens
    * @param scalar|scalar[] ...$args Template replacements/parameter values
@@ -148,11 +132,11 @@ abstract class Builder {
       if ($segment === false) {
         // ...but we have an open {
         if ($token === self::CLOSE) {
-          throw LaymanException::create(LaymanException::UNCLOSED_TOKEN);
+          throw BuilderException::create(BuilderException::UNCLOSED_TOKEN);
         }
         // ...but we still have args
         if (! empty($args)) {
-          throw LaymanException::create(LaymanException::TOO_MANY_ARGS);
+          throw BuilderException::create(BuilderException::TOO_MANY_ARGS);
         }
 
         // we're done!
@@ -166,41 +150,103 @@ abstract class Builder {
       }
 
       // this segment was a templating token
-      if (! isset(static::PARSER[$segment])) {
-        throw LaymanException::create(
-          LaymanException::INVALID_TOKEN,
-          ['token' => "{{$segment}}"]
+      if (! isset($this->parser[$segment])) {
+        // ...but we don't have a parser for this token
+        throw BuilderException::create(
+          BuilderException::UNKNOWN_TOKEN,
+          ["token" => "{{$segment}}"]
         );
       }
+      // ...but we have no more args
       if (empty($args)) {
-        throw LaymanException::create(LaymanException::TOO_FEW_ARGS);
+        throw BuilderException::create(BuilderException::TOO_FEW_ARGS);
       }
-      $parsed = static::PARSER[$segment]($parsed, array_shift($args));
 
-
-
-
-      //$arg = array_shift($args);
-      //switch ($segment) {
-      //  case self::T_PARAM:
-      //    $arg = [$arg];
-      //    // fall through
-      //  case self::T_PARAMS:
-      //    $parsed[self::SQL] .= $this->markers($arg);
-      //    array_push($parsed, ...$arg);
-      //    break;
-      //  case self::T_NAME:
-      //    $arg = [$arg];
-      //    // fall through
-      //  case self::T_NAMES:
-      //    $parsed[self::SQL] .= $this->names($arg);
-      //    break;
-      //  default:
-      //    throw LaymanException::create(
-      //      LaymanException::INVALID_TOKEN,
-      //      ['token' => "{{$segment}}"]
-      //    );
-      //}
+      // grab parser and run it
+      $parsed = $this->parser[$segment]($parsed, array_shift($args));
     }
   }
+
+  /**
+   * Prepares a Statement object from the query and binds initial parameters.
+   *
+   * @throws PDOException If preparing the statement fails
+   * @return PDOStatement The prepared and bound statement
+   */
+  public function prepareStatement() : PDOStatement {
+    [self::SQL => $sql, self::DATA => $data] = $this->build();
+
+    $statement = $this->factory->prepare($sql);
+    $this->bindParameters($statement, $data);
+    return $statement;
+  }
+
+  /**
+   * Sets up parser callbacks for supported templating tokens.
+   */
+  protected function setupFormatters() : void {
+    $this->formatter[self::T_NAME] = [$this, 'formatName'];
+    $this->formatter[self::T_NAMES] = [$this, 'formatNameList'];
+    $this->formatter[self::T_PARAM] = [$this, 'formatParameter'];
+    $this->formatter[self::T_PARAMS] = [$this, 'formatParameterList'];
+  }
+
+  /**
+   * Binds data to the given statement as parameters.
+   *
+   * @param PDOStatement The Statement instance to bind parameters to
+   * @param scalar[] $data The values to bind
+   * @throws PDOException If preparing the statement fails
+   * @return PDOStatement The prepared and bound statement
+   */
+  abstract protected function bindParameters(PDOStatement $statement, array $data) : void;
+
+  /**
+   * Builds the SQL statement and parameter list from this builder's current state.
+   *
+   * @return array
+   *  - string ${self::SQL} SQL query
+   *  - scalar[] ${self::DATA} Data to be bound to parameters
+   */
+  abstract protected function build() : array;
+
+  /**
+   * Quotes an identifier and adds it to the parsed sql.
+   *
+   * @param array $parsed Parsed statement and parameters
+   * @param string|mixed The identifier to quote
+   * @throws BuilderException BAD_IDENTIFIER on failure
+   * @return array Parsed statement and parameters
+   */
+  abstract protected function formatName(array $parsed, $arg) : array;
+
+  /**
+   * Quotes a list of identifiers and adds them to the parsed sql.
+   *
+   * @param array $parsed Parsed statement and parameters
+   * @param string[]|mixed The identifiers to quote
+   * @throws BuilderException BAD_IDENTIFIER_LIST on failure
+   * @return array Parsed statement and parameters
+   */
+  abstract protected function formatNameList(array $parsed, $arg) : array;
+
+  /**
+   * Adds a parameter marker to the parsed sql and appends valid data to the parameter list.
+   *
+   * @param array $parsed Parsed statement and parameters
+   * @param scalar|mixed The data to parameterize
+   * @throws BuilderException BAD_DATA on failure
+   * @return array Parsed statement and parameters
+   */
+  abstract protected function formatParameter(array $parsed, $arg) : array;
+
+  /**
+   * Adds parameter markers to the parsed sql and appends valid data to the parameter list.
+   *
+   * @param array $parsed Parsed statement and parameters
+   * @param scalar[]|mixed The data to parameterize
+   * @throws BuilderException BAD_DATA_LIST on failure
+   * @return array Parsed statement and parameters
+   */
+  abstract protected function formatParameterList(array $parsed, $args) : array;
 }

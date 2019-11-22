@@ -40,31 +40,65 @@ abstract class Factory {
   protected $pdo;
 
   /**
+   * Gets a Delete builder.
+   *
+   * @param string $table The table to delete from
+   * @param string $as Optional table alias
+   * @return Delete A new Delete builder
+   */
+  abstract public function delete(string $table, string $as = null) : Delete;
+
+  /**
+   * Gets an Insert builder.
+   *
+   * @param string $table The table to insert to
+   * @param string $as Optional table alias
+   * @return Delete A new Insert builder
+   */
+  abstract public function insert(string $table, string $as = null) : Insert;
+
+  /**
+   * Gets a Select builder.
+   *
+   * @param string $table The table to select from
+   * @param string $as Optional table alias
+   * @return Delete A new Select builder
+   */
+  abstract public function select(string $table, string $as = null) : Select;
+
+  /**
+   * Gets an Update builder.
+   *
+   * @param string $table The table to update
+   * @param string $as Optional table alias
+   * @return Delete A new Update builder
+   */
+  abstract public function update(string $table, string $as = null) : Update;
+
+  /**
    * @param PDO $pdo The Pdo connection to use
    * @throws LaymanException PDO_MISMATCH if pdo instance uses the wrong driver for this factory
    */
   public function __construct(PDO $pdo) {
     $type = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
     if ($type !== static::TYPE) {
-      throw LaymanException::create(LaymanException::PDO_MISMATCH, ['type' => $type]);
+      throw FactoryException::create(
+        FactoryException::PDO_MISMATCH,
+        ["factory_type" => static::TYPE, "type" => $type]
+      );
     }
 
     $this->pdo = $pdo;
   }
 
-  public function delete() : Delete {
-    throw LaymanException::create(LaymanException::NOT_IMPLEMENTED);
-  }
-
-  public function insert() : Insert {
-    throw LaymanException::create(LaymanException::NOT_IMPLEMENTED);
-  }
-
-  public function select() : Select {
-    throw LaymanException::create(LaymanException::NOT_IMPLEMENTED);
-  }
-
-  public function update() : Update {
-    throw LaymanException::create(LaymanException::NOT_IMPLEMENTED);
+  /**
+   * Prepares a statement.
+   *
+   * @param string $sql The query to prepare
+   * @throws PDOException On failure
+   * @return PDOStatement The prepared statement
+   */
+  public function prepare(string $sql) : PDOStatement {
+    return $this->pdo->prepare($sql);
   }
 }
